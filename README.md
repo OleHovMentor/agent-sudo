@@ -31,6 +31,8 @@ $ agent-sudo rollback
 restored 20261010-155106-439
 ```
 
+Want to see it live? `bash demo/demo.sh`
+
 ## Install
 
 ```bash
