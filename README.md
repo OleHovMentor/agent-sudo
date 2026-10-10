@@ -39,7 +39,22 @@ Want to see it live? `bash demo/demo.sh`
 pip install git+https://github.com/OleHovMentor/agent-sudo      # or just copy agent_sudo.py
 ```
 
-## Use it with your agent
+## Claude Code: one command
+
+```bash
+pip install git+https://github.com/OleHovMentor/agent-sudo
+agent-sudo install-hook            # this project (./.claude/settings.json); add --global for all projects
+```
+
+That registers a `PreToolUse` hook. From now on every `Bash` call is checked against the policy, and
+`Read`/`Edit`/`Write` of `.env`, `~/.ssh/*`, `~/.aws/*` and friends is denied. The agent gets a clear
+reason and is told not to work around it. Safe calls pass through silently and your normal permission
+prompts still apply. Every decision lands in `.agent-sudo/audit.jsonl`.
+
+Hook mode checks calls *before* they run; it cannot rewrite output or take snapshots. For redaction and
+rollback, have the agent run commands through `agent-sudo run --`.
+
+## Any other agent
 
 Tell the agent to run every shell command through the wrapper, for example in
 `CLAUDE.md` / `AGENTS.md`:

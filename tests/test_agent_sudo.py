@@ -106,3 +106,49 @@ def test_custom_policy_file(tmp_path):
     pol = A.Policy.load()
     assert not pol.check("kubectl delete pod x")[0]
     assert not pol.check("rm -rf /")[0]  # defaults still on
+
+
+# ---- Claude Code hook
+import json as _json
+
+
+def _hook(event, capsys):
+    rc = A.run_hook(_json.dumps(event), A.Policy())
+    return rc, capsys.readouterr().out
+
+
+def test_hook_denies_dangerous_bash(capsys):
+    rc, out = _hook({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}, capsys)
+    d = _json.loads(out)["hookSpecificOutput"]
+    assert rc == 0 and d["permissionDecision"] == "deny" and "deny:rm-root" in d["permissionDecisionReason"]
+
+
+def test_hook_allows_safe_bash_silently(capsys):
+    assert _hook({"tool_name": "Bash", "tool_input": {"command": "git status"}}, capsys) == (0, "")
+
+
+@pytest.mark.parametrize("path", ["/app/.env", "/app/.env.production", "/home/u/.ssh/id_rsa", "C:\\Users\\u\\.aws\\credentials"])
+def test_hook_denies_secret_files(path, capsys):
+    _, out = _hook({"tool_name": "Read", "tool_input": {"file_path": path}}, capsys)
+    assert _json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("path", ["/app/.env.example", "/app/src/main.py", "/app/environment.md"])
+def test_hook_allows_normal_files(path, capsys):
+    assert _hook({"tool_name": "Read", "tool_input": {"file_path": path}}, capsys) == (0, "")
+
+
+def test_hook_ignores_other_tools_and_garbage(capsys):
+    assert _hook({"tool_name": "WebFetch", "tool_input": {"url": "x"}}, capsys) == (0, "")
+    assert A.run_hook("not json", A.Policy()) == 0
+
+
+def test_install_hook_merges_and_is_idempotent(tmp_path):
+    f = tmp_path / ".claude" / "settings.json"
+    f.parent.mkdir()
+    f.write_text(_json.dumps({"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"PreToolUse": [
+        {"matcher": "Task", "hooks": [{"type": "command", "command": "other"}]}]}}))
+    assert A.install_hook(f, "agent-sudo hook") is True
+    assert A.install_hook(f, "agent-sudo hook") is False
+    d = _json.loads(f.read_text())
+    assert d["permissions"] == {"allow": ["Bash(ls)"]} and len(d["hooks"]["PreToolUse"]) == 2

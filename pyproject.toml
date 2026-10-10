@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-sudo"
-version = "0.1.0"
+version = "0.2.0"
 description = "A zero-dependency safety wrapper for shell commands run by AI agents: policy, secret redaction, snapshots, audit log."
 readme = "README.md"
 requires-python = ">=3.9"

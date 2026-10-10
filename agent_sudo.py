@@ -18,13 +18,14 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
 import time
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 STATE_DIR = Path(os.environ.get("AGENT_SUDO_DIR", ".agent-sudo"))
 POLICY_FILE = "agent-sudo.toml"
@@ -199,6 +200,69 @@ def audit(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+# ----------------------------------------------------------- Claude Code hook
+SECRET_PATH_RE = re.compile(
+    r"(^|/)(\.env(\..+)?|id_rsa|id_ed25519|\.npmrc|\.pypirc|\.netrc|credentials)$|/\.ssh/|/\.aws/", re.I
+)
+FILE_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def hook_decision(event: dict, policy: Policy) -> tuple[bool, str]:
+    """Decide on a Claude Code PreToolUse event. Returns (allowed, reason)."""
+    tool = event.get("tool_name", "")
+    inp = event.get("tool_input") or {}
+    if tool == "Bash":
+        return policy.check(inp.get("command", ""))
+    if tool in FILE_TOOLS:
+        path = inp.get("file_path") or inp.get("notebook_path") or ""
+        if path and SECRET_PATH_RE.search(path.replace("\\", "/")) and not path.endswith((".example", ".sample", ".template")):
+            return False, "deny:secret-file"
+    return True, "allowed"
+
+
+def run_hook(stdin_text: str, policy: Policy) -> int:
+    """Claude Code PreToolUse hook: JSON on stdin, JSON deny on stdout. Allowed calls print nothing."""
+    try:
+        event = json.loads(stdin_text)
+    except ValueError:
+        return 0  # not our event; never break the agent on malformed input
+    allowed, rule = hook_decision(event, policy)
+    inp = event.get("tool_input") or {}
+    audit({"command": inp.get("command") or inp.get("file_path") or event.get("tool_name", ""),
+           "tool": event.get("tool_name"), "decision": "hook-allowed" if allowed else "hook-blocked", "rule": rule})
+    if allowed:
+        return 0
+    reason = (f"agent-sudo blocked this call ({rule}). Do not retry or work around it; "
+              "explain to the user what you wanted to do and ask them to run it themselves.")
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}))
+    return 0
+
+
+def hook_command() -> str:
+    exe = shutil.which("agent-sudo")
+    return f"{shlex.quote(exe)} hook" if exe else f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))} hook"
+
+
+def install_hook(settings_path: Path, command: str | None = None) -> bool:
+    """Merge the agent-sudo PreToolUse hook into a Claude Code settings.json. Returns False if already there."""
+    command = command or hook_command()
+    data = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    entries = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    for e in entries:
+        for h in e.get("hooks", []):
+            if h.get("command", "").rstrip().endswith(" hook") and "agent" in h.get("command", ""):
+                return False
+    entries.append({"matcher": "Bash|Read|Edit|Write|MultiEdit|NotebookEdit",
+                    "hooks": [{"type": "command", "command": command}]})
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    return True
+
+
 # ------------------------------------------------------------------------ run
 def run_command(command: str, policy: Policy, dry_run=False, no_snapshot=False) -> int:
     allowed, rule = policy.check(command)
@@ -254,6 +318,9 @@ def main(argv=None) -> int:
     sub.add_parser("snapshots", help="list snapshots")
     t = sub.add_parser("log", help="show recent audit entries")
     t.add_argument("-n", type=int, default=20)
+    sub.add_parser("hook", help="Claude Code PreToolUse hook (reads the event JSON on stdin)")
+    ih = sub.add_parser("install-hook", help="add the hook to Claude Code settings")
+    ih.add_argument("--global", dest="glob", action="store_true", help="~/.claude/settings.json instead of ./.claude/settings.json")
     sub.add_parser("init", help=f"write a starter {POLICY_FILE}")
 
     a = ap.parse_args(argv)
@@ -282,6 +349,12 @@ def main(argv=None) -> int:
         f = STATE_DIR / "audit.jsonl"
         lines = f.read_text().splitlines()[-a.n:] if f.exists() else []
         print("\n".join(lines) or "(empty)")
+        return 0
+    if a.cmd == "hook":
+        return run_hook(sys.stdin.read(), Policy.load(a.policy))
+    if a.cmd == "install-hook":
+        path = (Path.home() if a.glob else Path(".")) / ".claude" / "settings.json"
+        print(f"installed in {path}" if install_hook(path) else f"already installed in {path}")
         return 0
     if a.cmd == "init":
         if Path(POLICY_FILE).exists():
