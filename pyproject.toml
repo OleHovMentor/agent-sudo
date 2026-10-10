@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-sudo"
+version = "0.1.0"
+description = "A zero-dependency safety wrapper for shell commands run by AI agents: policy, secret redaction, snapshots, audit log."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["ai-agents", "llm", "security", "guardrails", "claude-code", "mcp", "devops"]
+
+[project.scripts]
+agent-sudo = "agent_sudo:main"
+
+[tool.setuptools]
+py-modules = ["agent_sudo"]
